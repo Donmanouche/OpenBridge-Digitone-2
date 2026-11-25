@@ -458,18 +458,9 @@ void DeviceModel::subscribe(Messenger* m)
     observe(kObjKitPerTrack, 0, 0);
 }
 
-bool DeviceModel::altMachinesAvailable() const
-{
-    // The alternative firmware is recognised by a track that already uses one of its machines
-    // (machine numbers above 4); the official firmware has machines 0..4 only.
-    for (int t = 0; t < kTracks; ++t)
-        if (trackLoaded(t) && machine(t) > 4) return true;
-    return false;
-}
-
 void DeviceModel::setMachine(int track, int machine)
 {
-    const bool ok = (machine >= 0 && machine <= 4) || (isAltMachine(machine) && altMachinesAvailable());
+    const bool ok = machine >= 0 && machine <= 4;
     if (ok && machine != this->machine(track)) changeSetupByte(track, kSetupMachineOffset, machine);
 }
 
@@ -639,9 +630,7 @@ void DeviceModel::applyJob(int track, std::vector<uint8_t> c)
 
     // Leftovers of other machines (owner 0..4) and filter machines (owner 5..10). Activating a machine
     // resets its parameters, so each slot is written by the last activated owner that uses it.
-    // owners that may be activated to write leftover slots: the Digitone II machines (0..4) and filter
-    // machines (5..10). The alternative firmware's machines (8 ...) are never used for that: their slots
-    // are reachable through the Digitone II machines, and the official firmware does not have them.
+    // owners that may be activated to write leftover slots: the machines (0..4) and filter machines (5..10)
     auto ownerOf = [](const ParamDef& p) {
         const int m = machineOf(p);
         if (m >= 0) return m <= 4 ? m : -1;

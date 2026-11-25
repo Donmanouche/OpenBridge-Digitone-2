@@ -76,8 +76,6 @@ public:
     // changes that byte and writes it back (class 0x10 type 6). The device resets the machine's
     // parameters, as when the machine is changed on the device.
     void setMachine(int track, int machine);
-    // True when the device runs the alternative firmware with the Digitakt II machines (One Shot ...).
-    bool altMachinesAvailable() const;
 
     // Total Recall: last session state the device reported (notification 0x2B: 1 disabled, 2 active,
     // 3 aborted, 8 choose device or plugin, 9 send the project, 10 the device is master ...), how many

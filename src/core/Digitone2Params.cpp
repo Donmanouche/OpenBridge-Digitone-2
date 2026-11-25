@@ -12,7 +12,6 @@ const std::vector<ParamDef>& digitone2Params()
 {
     static const std::vector<ParamDef> table = {
 #include "Digitone2ParamTable.inc"
-#include "Digitone2ExtraParams.inc"
     };
     return table;
 }
@@ -32,7 +31,6 @@ int machineOf(const ParamDef& p)
 {
     if (p.object != ParamObject::Sound) return -1;
     if (p.section >= 0 && p.section <= 4) return p.section;
-    if (p.section >= kAltMachineSection && p.section < kAltMachineSection + 8) return kFirstAltMachine + p.section - kAltMachineSection;
     return -1;
 }
 int filterMachineOf(const ParamDef& p)
@@ -40,13 +38,10 @@ int filterMachineOf(const ParamDef& p)
     return p.object == ParamObject::Sound && p.section >= 5 && p.section <= 10 ? p.section - 5 : -1;
 }
 
-bool isAltMachine(int m) { return m == 8; }
-
 const char* machineName(int m)
 {
     static const char* n[] = {"FM Tone", "WaveTone", "FM Drum", "Swarmer", "MIDI"};
     if (m >= 0 && m < 5) return n[m];
-    if (m == 8) return "One Shot"; // alternative firmware (Digitakt II machine)
     return "?";
 }
 

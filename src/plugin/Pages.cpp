@@ -986,9 +986,6 @@ void TrackPage::buildMachine()
     removeControls(machineControls_);
     removeOwned(machineParts_);
     const int m = proc_.model().machine(track_);
-    // the alternative firmware's machines are offered once the device shows it has them
-    if (proc_.model().altMachinesAvailable() && machineBox_.indexOfItemId(ob::kFirstAltMachine + 1) < 0)
-        machineBox_.addItem(ob::machineName(ob::kFirstAltMachine), ob::kFirstAltMachine + 1);
     machineBox_.setSelectedId(m + 1, juce::dontSendNotification);
     if (m < 0) return;
     tint_ = &Tints::synth;
