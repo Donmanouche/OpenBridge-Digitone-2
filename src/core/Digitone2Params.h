@@ -13,7 +13,7 @@ enum class ParamFormat : uint8_t {
     Plain, Bipolar, Decimal, BipolarDecimal, OnOff, Pan, RatioA, RatioC, RatioB, Harmonics, RatioOffset,
     LfoDepth, DecayInf, SendOff, Decimal1, Percent, Routing, LfoMult, LfoWave, LfoTrig, PlusOne, LinearOffset,
     WaveTable, DrumRatio, DecimalInf, PortaOnOff, LegacyType, HoldNote, AmpMode, BitReduction, PhaseReset, OscMod,
-    OscPhaseReset, MinusTwo, DelayFeedback, ReverbDecay, MakeupGain, CompRatio, SidechainSource
+    OscPhaseReset, MinusTwo, DelayFeedback, ReverbDecay, MakeupGain, CompRatio, SidechainSource, DelayTime
 };
 
 struct ParamDef {

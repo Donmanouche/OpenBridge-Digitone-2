@@ -87,6 +87,7 @@ OpenBridgeProcessor::OpenBridgeProcessor() : AudioProcessor(makeBuses()), desc_(
 {
     outBuses_ = ob::groupChannels(desc_->toHost);
     inBuses_ = ob::groupChannels(desc_->toDevice);
+    for (int i = 0; i < kMaxPairs; ++i) outRoute_[(size_t)i] = i;
     connectSession();
     model_ = ob::DeviceModel::create(session_);
     model_->setMidiSender([this](int channel, int cc, int value) {
@@ -368,15 +369,22 @@ void OpenBridgeProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
         while (pk[0] > cur && !mainPeak_.compare_exchange_weak(cur, pk[0])) {}
     }
 
+    // each device pair goes to the bus chosen in "Audio to:" (summed when several share one bus)
+    int route[kMaxPairs];
+    for (int p = 0; p < (int)outBuses.size() && p < kMaxPairs; ++p) route[p] = outRoute_[(size_t)p].load(std::memory_order_relaxed);
     for (int b = 0; b < getBusCount(false) && b < (int)outBuses.size(); ++b) {
         auto* bus = getBus(false, b);
         if (!bus->isEnabled()) continue;
         auto view = bus->getBusBuffer(buffer);
-        for (int c = 0; c < view.getNumChannels(); ++c) {
-            float* dst = view.getWritePointer(c);
-            const int ch = outBuses[(size_t)b].firstChannel + std::min(c, outBuses[(size_t)b].channels - 1);
-            const float* src = interleavedOut_.data() + ch;
-            for (int i = 0; i < n; ++i) dst[i] = src[(size_t)i * outCh];
+        view.clear();
+        for (int p = 0; p < (int)outBuses.size() && p < kMaxPairs; ++p) {
+            if (route[p] != b) continue;
+            for (int c = 0; c < view.getNumChannels(); ++c) {
+                float* dst = view.getWritePointer(c);
+                const int ch = outBuses[(size_t)p].firstChannel + std::min(c, outBuses[(size_t)p].channels - 1);
+                const float* src = interleavedOut_.data() + ch;
+                for (int i = 0; i < n; ++i) dst[i] += src[(size_t)i * outCh];
+            }
         }
     }
 }
@@ -395,6 +403,11 @@ void OpenBridgeProcessor::getStateInformation(juce::MemoryBlock& destData)
     s.setProperty("libraryBank", uiLibraryBank, nullptr);
     s.setProperty("tagFilter", (juce::int64)uiTagFilter, nullptr);
     s.setProperty("hideFilters", uiHideFilters, nullptr);
+    {
+        juce::StringArray r;
+        for (int p = 0; p < outputPairCount(); ++p) r.add(juce::String(outputRoute(p)));
+        s.setProperty("outputBusRouting", r.joinIntoString(","), nullptr);
+    }
     // Total Recall: session id (0: disabled), the device's project
     // (LZ4 frame as the device sends it), last sync time, "Sync automatically on save".
     if (model_) {
@@ -421,6 +434,10 @@ void OpenBridgeProcessor::setStateInformation(const void* data, int sizeInBytes)
     uiLibraryBank = juce::jlimit(0, 7, (int)s.getProperty("libraryBank", 0));
     uiTagFilter = (uint32_t)(juce::int64)s.getProperty("tagFilter", 0);
     uiHideFilters = (bool)s.getProperty("hideFilters", false);
+    {
+        const auto r = juce::StringArray::fromTokens(s.getProperty("outputBusRouting", "").toString(), ",", "");
+        for (int p = 0; p < outputPairCount(); ++p) setOutputRoute(p, p < r.size() ? r[p].getIntValue() : p);
+    }
     selectDevice(s.getProperty("device", "").toString().toStdString());
     if (model_) {
         ob::DeviceModel::TrSaved tr;

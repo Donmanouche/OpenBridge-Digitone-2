@@ -99,6 +99,15 @@ public:
         return channel >= 0 && channel < (int)channelPeak_.size() ? channelPeak_[(size_t)channel].exchange(0.0f) : 0.0f;
     }
     int outputChannelIndex(const std::string& name) const; // first channel of an output ("Main", "Track 3", "Delay")
+    // "Audio to:": the host output bus each device output pair is sent
+    // to. Pairs and buses in the device order: 0 Main ("LR"), 1..16 tracks, 17 delay, 18 reverb,
+    // 19 chorus, 20 external in. Several pairs sent to one bus are summed; default pair n -> bus n.
+    int outputPairCount() const { return (int)outBuses_.size(); }
+    int outputRoute(int pair) const { return pair >= 0 && pair < kMaxPairs ? outRoute_[(size_t)pair].load() : pair; }
+    void setOutputRoute(int pair, int bus)
+    {
+        if (pair >= 0 && pair < outputPairCount() && bus >= 0 && bus < outputPairCount()) outRoute_[(size_t)pair] = bus;
+    }
     // Set while the editor changes a parameter, so the change is sent even in the sync window.
     std::atomic<bool> editorGesture{false};
     float uiZoom = 1.0f; // 100 %
@@ -124,6 +133,8 @@ private:
     std::shared_ptr<ob::DeviceModel> model_;
     std::shared_ptr<ob::PresetLibrary> library_;
     std::array<std::atomic<float>, 64> channelPeak_{};
+    static constexpr int kMaxPairs = 32;
+    std::array<std::atomic<int>, kMaxPairs> outRoute_{};
     juce::String wantedId_;
     bool owner_ = false;
     std::vector<DeviceParameter*> byIndex_; // slotIndex -> parameter

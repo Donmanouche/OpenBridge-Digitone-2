@@ -198,6 +198,16 @@ std::string formatValue(const ParamDef& p, int raw)
     case ParamFormat::MakeupGain: return pick(kMakeupGain, c) + "dB";
     case ParamFormat::CompRatio: return pick(kCompRatio, c);
     case ParamFormat::SidechainSource: return pick(kSidechainSource, c);
+    case ParamFormat::DelayTime: {
+        // note values for the delay time steps (in 1/128 notes: raw + 0x100), else the number of steps
+        static const std::pair<int, const char*> kNotes[] = {
+            {0x0000, "1/128"}, {0x0100, "1/64"}, {0x0200, "1/64."}, {0x0300, "1/32"}, {0x0500, "1/32."},
+            {0x0700, "1/16"},  {0x0b00, "1/16."}, {0x0f00, "1/8"},  {0x1700, "1/8."},  {0x1f00, "1/4"},
+            {0x2f00, "1/4."},  {0x3f00, "1/2"},  {0x5f00, "1/2."}, {0x7f00, "1/1"}};
+        for (const auto& n : kNotes)
+            if (n.first == raw) return n.second;
+        return signedDecimal(raw + 0x100);
+    }
     case ParamFormat::DelayFeedback: std::snprintf(buf, sizeof buf, "%d", c * 100 / 64); return buf;
     case ParamFormat::ReverbDecay:
         if (c > 126) return "INF";

@@ -13,10 +13,11 @@ Linux implementation of Elektron Overbridge for the **Elektron Digitone II**:
 - **Editor**: machine pages, filter, amp, LFOs, modulation (key tracking,
   pitch bend, velocity, mod wheel, breath, aftertouch), SETUP (TRK, VOICE, PORTAMENTO, LAYER),
   send FX, mixer with level meters, compressor, Ext-In, on-screen keyboard.
-- **Mixer**: track levels, mutes, pattern mutes, solo, pan, send FX, master and compressor,
-  read from the device when the plugin opens.
-- **Preset Browser**: kit track presets, +Drive library (banks A–H, tags, filters); load a
-  +Drive preset into a track; Clear a track.
+- **Mixer**: track levels, mutes, pattern mutes, solo, pan, send FX, master, compressor and
+  compressor routing, read from the device when the plugin opens. **Audio to:** sends each channel
+  to the DAW output of your choice (LR or 1–20).
+- **Preset Browser**: kit track presets, project preset pool, +Drive library (banks A–H, tags,
+  filters); load a +Drive preset into a track; Clear a track.
 - **Changes made on the device** (knobs, mixer, mutes) are followed by the plugin.
 - **Total Recall**: the device's whole project can be stored in the DAW project and restored when
   the DAW project is opened (see below).
@@ -31,11 +32,11 @@ Linux implementation of Elektron Overbridge for the **Elektron Digitone II**:
 
 ### .deb package (Ubuntu / Debian)
 
-Download `openbridge-digitone2_0.1.5_amd64.deb` from the
+Download `openbridge-digitone2_0.1.7_amd64.deb` from the
 [Releases](https://github.com/Donmanouche/OpenBridge-Digitone-2/releases) page, then:
 
 ```bash
-sudo apt install ./openbridge-digitone2_0.1.5_amd64.deb
+sudo apt install ./openbridge-digitone2_0.1.7_amd64.deb
 ```
 
 It installs:
@@ -47,7 +48,7 @@ Unplug and replug the Digitone after installing.
 
 ### Archive
 
-`openbridge-digitone2-0.1.5-linux-x86_64.tar.gz` holds the same files.
+`openbridge-digitone2-0.1.7-linux-x86_64.tar.gz` holds the same files.
 
 1. Copy `OpenBridge Digitone II.vst3` to `~/.vst3/`.
 2. Install the udev rule:
@@ -100,9 +101,6 @@ ninja -C build
 
 The plugin is in `build/OpenBridgeDigitone2_artefacts/Release/VST3/`.
 
-## Not available yet
-
-- **Delay time**: shown as a raw value, not as a note length.
 
 ## Disclaimer
 

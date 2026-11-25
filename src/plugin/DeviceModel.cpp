@@ -157,7 +157,7 @@ void DeviceModel::poll()
         if (at && now >= at && reloadAtMs_[(size_t)t].compare_exchange_strong(at, 0))
             pendingReload_ |= 1u << t;
     }
-    const bool trWork = trWork_.load() || trGeneration_ != g;
+    const bool trWork = trWork_.load() || trGeneration_ != g || pendingPool_.load();
     if (g == generation_ && pendingReload_.load() == 0 && !pendingMixer_.load() && !trWork) return;
     std::lock_guard<std::mutex> l(session_->messengerLock());
     auto* m = session_->messenger();
@@ -173,6 +173,7 @@ void DeviceModel::poll()
         if (r == 0xffffu) loadKit(m);
     }
     if (pendingMixer_.exchange(false) && session_->protocolVersion() >= 129) loadMixer(m);
+    if (pendingPool_.exchange(false) && session_->protocolVersion() >= 129) loadPool(m);
     if (session_->protocolVersion() >= 129) pollTotalRecall(m);
 }
 
@@ -769,7 +770,7 @@ constexpr FxOffset kKitFxOffsets[] = {
 };
 constexpr size_t kKitTrackLevels = 0x1c;    // 16 × u16 BE, one per track
 constexpr size_t kKitContainerBytes = 10752; // version 4 (OS 1.12)
-constexpr uint8_t kReadKit = 0x0e, kReadPatternMutes = 0x2e, kReadProjectSettings = 0x1a;
+constexpr uint8_t kReadKit = 0x0e, kReadPatternMutes = 0x2e, kReadProjectSettings = 0x1a, kReadFxSetup = 0x0a;
 constexpr size_t kProjectSettingsMutes = 12; // u16 BE track mask (bit n = track n + 1)
 } // namespace
 
@@ -794,6 +795,13 @@ void DeviceModel::loadMixer(Messenger* m)
             }
         }
     });
+    // compressor routing mask (FX setup, 4 bytes big-endian)
+    loadPool(m);
+    m->read(kReadFxSetup, 0x10, [weak](bool ok, const Message& msg) {
+        auto self = weak.lock();
+        const auto& b = msg.payload;
+        if (ok && self && msg.header.cls == 0x21 && b.size() == 4) self->compRouting_ = (int)((uint32_t)b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
+    }, 0x10, 0);
     auto setMask = [weak](const char* key, int mask) {
         auto self = weak.lock();
         const auto* d = findParam(key);
@@ -834,6 +842,46 @@ void DeviceModel::loadMixer(Messenger* m)
                 }
         }
     });
+}
+
+void DeviceModel::loadPool(Messenger* m)
+{
+    std::weak_ptr<DeviceModel> weak = shared_from_this();
+    m->read(0x26, 0, [weak](bool ok, const Message& msg) {
+        auto self = weak.lock();
+        const auto& b = msg.payload;
+        if (!ok || !self || msg.header.cls != 0x21 || b.size() != 128 * 24) return;
+        std::vector<PoolEntry> pool(128);
+        for (size_t i = 0; i < 128; ++i) {
+            const uint8_t* e = b.data() + i * 24;
+            auto& p = pool[i];
+            p.used = e[0] != 0xff;
+            p.machine = e[1];
+            p.tags = (uint32_t)e[4] << 24 | e[5] << 16 | e[6] << 8 | e[7];
+            if (p.used) p.name.assign(reinterpret_cast<const char*>(e + 8), strnlen(reinterpret_cast<const char*>(e + 8), 16));
+        }
+        {
+            std::lock_guard<std::mutex> l(self->nameLock_);
+            self->pool_ = std::move(pool);
+        }
+        ++self->poolGeneration_;
+    });
+}
+
+std::vector<DeviceModel::PoolEntry> DeviceModel::pool() const
+{
+    std::lock_guard<std::mutex> l(nameLock_);
+    return pool_;
+}
+
+void DeviceModel::setCompressorRouting(uint32_t mask)
+{
+    // class 0x10, type 0x0A (FX setup), arg 0x10, the mask as a big-endian u32
+    compRouting_ = (int)mask;
+    if (!session_ || session_->protocolVersion() < 129) return;
+    std::lock_guard<std::mutex> l(session_->messengerLock());
+    if (auto* m = session_->messenger())
+        m->write(0x10, kReadFxSetup, 0x10, {(uint8_t)(mask >> 24), (uint8_t)(mask >> 16), (uint8_t)(mask >> 8), (uint8_t)mask});
 }
 
 void DeviceModel::writeKitObject(uint8_t type, std::vector<uint8_t> blob)
@@ -1036,6 +1084,14 @@ void DeviceModel::onNotification(const Message& m)
     }
     if (m.header.cls == 0x30 && type == 0x2c) { // Total Recall session id changed
         ++trSessionChanges_;
+        return;
+    }
+    if (m.header.cls == 0x30 && type == 0x26) { // project preset pool changed
+        pendingPool_ = true;
+        return;
+    }
+    if (m.header.cls == 0x30 && type == 0x0a) { // FX setup changed (compressor routing): read it again
+        pendingMixer_ = true;
         return;
     }
     if (type == 0x1a) { // project settings changed (mixer mutes ...): read them again, not the whole kit

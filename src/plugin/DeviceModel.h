@@ -109,6 +109,21 @@ public:
     };
     void trSetSaved(TrSaved s);        // host project restored: starts a recall session
     TrSaved trGetSaved();              // host saves: with auto-sync, re-reads the project first (10 s max)
+    // Project preset pool (read type 0x26): 128 slots of 24 bytes
+    // {state (0xFF empty), machine, u16 slot, u32 tags, name[16]}. Read at connection and when the
+    // device reports a pool change; poolGeneration() changes with each new listing.
+    struct PoolEntry {
+        bool used = false;
+        int machine = 0;
+        uint32_t tags = 0;
+        std::string name;
+    };
+    std::vector<PoolEntry> pool() const;
+    int poolGeneration() const { return poolGeneration_.load(); }
+    // Compressor routing (FX setup object 0x0A arg 0x10):
+    // bits 0..15 tracks 1..16, 16 / 17 external input L / R, 18 send FX. -1 until read.
+    int compressorRouting() const { return compRouting_.load(); }
+    void setCompressorRouting(uint32_t mask);
     void setFilterMachine(int track, int filter);
 
     // Loads a sound container (e.g. from a +Drive preset file, read over SysEx) into a track,
@@ -205,6 +220,11 @@ private:
     void subscribe(Messenger* m); // device -> host parameter notifications
     void loadMixer(Messenger* m);
     void writeKitObject(uint8_t type, std::vector<uint8_t> blob);
+    std::atomic<int> compRouting_{-1};
+    void loadPool(Messenger* m);
+    std::vector<PoolEntry> pool_;           // guarded by nameLock_
+    std::atomic<int> poolGeneration_{0};
+    std::atomic<bool> pendingPool_{false};
 
     void writerLoop();
     std::vector<std::atomic<uint8_t>> dirty_;

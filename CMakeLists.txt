@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # ------------------------------------------------------------------------------------------
 # OpenBridge: a Linux implementation of Elektron Overbridge (VST3 first, Digitone II first).
 # ------------------------------------------------------------------------------------------
-project(OpenBridge VERSION 0.1.5 LANGUAGES C CXX)
+project(OpenBridge VERSION 0.1.7 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

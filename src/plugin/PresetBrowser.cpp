@@ -116,6 +116,7 @@ private:
 class PresetBrowserPage::PoolList : public juce::Component {
 public:
     int selected = 0;
+    std::vector<ob::DeviceModel::PoolEntry> entries;
     void paint(juce::Graphics& g) override
     {
         const auto clip = g.getClipBounds();
@@ -128,6 +129,15 @@ public:
             g.setColour(C(Col::text));
             g.setFont(uiFont(13.5f, true));
             g.drawText(juce::String(i + 1), 0, row.getY(), kPoolCols[0] - 4, kRowH, juce::Justification::centredRight);
+            if (i < (int)entries.size() && entries[(size_t)i].used) {
+                const auto& e = entries[(size_t)i];
+                g.drawText(upper(e.name), kPoolCols[0] + 8, row.getY(), kPoolCols[1] - kPoolCols[0] - 12, kRowH,
+                           juce::Justification::centredLeft, true);
+                g.setFont(uiFont(13.0f));
+                g.setColour(C(Col::dim));
+                g.drawText(juce::String(ob::presetTagList(e.tags)), kPoolCols[1] + 6, row.getY(), getWidth() - kPoolCols[1] - 10,
+                           kRowH, juce::Justification::centredLeft, true);
+            }
         }
     }
     void mouseDown(const juce::MouseEvent& e) override
@@ -430,6 +440,11 @@ void PresetBrowserPage::timerCallback()
             tiles_[(size_t)t]->repaint();
         }
     }
+    if (const int pg = proc_.model().poolGeneration(); pg != poolGen_) {
+        poolGen_ = pg;
+        pool_->entries = proc_.model().pool();
+        pool_->repaint();
+    }
     const auto gen = library_->generation();
     if (gen != libraryGen_) {
         libraryGen_ = gen;
@@ -491,10 +506,6 @@ void PresetBrowserPage::paint(juce::Graphics& g)
     }
 
     drawHeaderRow(g, poolHeader_, {{7, "SLOT"}, {65, "NAME"}, {303, "TAGS"}}, kPoolCols, 4);
-    g.setColour(C(Col::dim));
-    g.setFont(uiFont(13.0f));
-    g.drawText("Pool contents are not readable from this OS version", poolHeader_.translated(0, -26).withTrimmedLeft(260),
-               juce::Justification::centredRight, true);
 
     // filter area lines
     g.setColour(C(Col::line));

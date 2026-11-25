@@ -184,7 +184,7 @@
 {"FX_ChorusDelaySend", ParamObject::Fx, 109, 114, 16, 29, 0, 32512, 0, false, 12, 301, ParamFormat::Plain, -1, "Delay Send", "Chorus", "DEL"},
 {"FX_ChorusReverbSend", ParamObject::Fx, 110, 115, 16, 30, 0, 32512, 0, false, 13, 302, ParamFormat::Plain, -1, "Reverb Send", "Chorus", "REV"},
 {"FX_ChorusMixVolume", ParamObject::Fx, 112, 117, 16, 31, 0, 32512, 25600, false, 14, 303, ParamFormat::Plain, -1, "Mix Volume", "Chorus", "VOL"},
-{"FX_DelayTime", ParamObject::Fx, 113, 119, 18, 32, 0, 32512, 5888, true, 21, 256, ParamFormat::Plain, -1, "Delay Time", "Delay", "TIME"},
+{"FX_DelayTime", ParamObject::Fx, 113, 119, 18, 32, 0, 32512, 5888, true, 21, 256, ParamFormat::DelayTime, -1, "Delay Time", "Delay", "TIME"},
 {"FX_DelayMode", ParamObject::Fx, 114, 120, 18, 33, 0, 256, 0, false, 22, 257, ParamFormat::OnOff, -1, "Pingpong", "Delay", "X"},
 {"FX_DelayStereoWidth", ParamObject::Fx, 115, 121, 18, 34, 0, 32512, 16384, false, 23, 258, ParamFormat::Bipolar, -1, "Stereo Width", "Delay", "WID"},
 {"FX_DelayFeedback", ParamObject::Fx, 116, 122, 18, 35, 0, 32512, 8192, true, 24, 259, ParamFormat::DelayFeedback, -1, "Feedback Gain", "Delay", "FDBK"},

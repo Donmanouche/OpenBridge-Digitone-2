@@ -67,6 +67,7 @@ private:
     OpenBridgeProcessor& proc_;
     std::shared_ptr<ob::PresetLibrary> library_;
     uint64_t libraryGen_ = 0;
+    int poolGen_ = -1;
     juce::String lastStatus_;
 
     std::array<std::unique_ptr<TrackTile>, 16> tiles_;

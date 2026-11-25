@@ -1377,7 +1377,7 @@ void SendFxPage::resized()
 
 // ------------------------------------------------------------------------------------------ MixerPage
 namespace {
-// Text and controls shown but not connected yet (compressor routing, "Audio to:").
+// Static text of the mixer page.
 class StaticText : public juce::Component, public juce::SettableTooltipClient {
 public:
     StaticText(juce::String t, float size, juce::uint32 colour, bool boxed = false)
@@ -1403,6 +1403,104 @@ private:
     float size_;
     juce::uint32 colour_;
     bool boxed_;
+};
+
+// Compressor routing input: one or two bits of the routing mask (tracks 0..15, external input L / R
+// 16 / 17 linked unless Dual Mono, send FX 18). MIDI machine tracks have no audio: shown disabled.
+class RoutingButton : public juce::Component, private juce::Timer {
+public:
+    RoutingButton(OpenBridgeProcessor& p, juce::String label, int bit, int track = -1)
+        : proc_(p), label_(std::move(label)), bit_(bit), track_(track)
+    {
+        startTimerHz(6);
+    }
+    void paint(juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat();
+        const bool on = mask_ >= 0 && ((mask_ >> bit_) & 1);
+        g.setColour(juce::Colour(on ? 0xff6f6a75 : 0xff2f2f2f).brighter(isMouseOver() && enabled_ ? 0.1f : 0.0f));
+        g.fillRect(r);
+        g.setColour(juce::Colour(on ? Palette::text : Palette::textDim).withMultipliedAlpha(enabled_ ? 1.0f : 0.4f));
+        g.setFont(uiFont(13.0f, true));
+        g.drawText(label_, r, juce::Justification::centred);
+    }
+    void mouseEnter(const juce::MouseEvent&) override { repaint(); }
+    void mouseExit(const juce::MouseEvent&) override { repaint(); }
+    void mouseDown(const juce::MouseEvent&) override
+    {
+        auto& m = proc_.model();
+        if (!enabled_ || m.compressorRouting() < 0) return;
+        uint32_t bits = 1u << bit_;
+        if (bit_ == 16 || bit_ == 17) { // external input: L and R together unless Dual Mono
+            const auto* d = ob::findParam("FX_ExtInDualMono");
+            if (!d || m.get((int)(d - ob::digitone2Params().data()), 0) == d->min) bits = 3u << 16;
+        }
+        const uint32_t mask = (uint32_t)m.compressorRouting();
+        m.setCompressorRouting((mask & (1u << bit_)) ? mask & ~bits : mask | bits);
+        timerCallback();
+    }
+
+private:
+    void timerCallback() override
+    {
+        const int mask = proc_.model().compressorRouting();
+        const bool enabled = track_ < 0 || proc_.model().machine(track_) != 4;
+        if (mask != mask_ || enabled != enabled_) {
+            mask_ = mask;
+            enabled_ = enabled;
+            repaint();
+        }
+    }
+    OpenBridgeProcessor& proc_;
+    juce::String label_;
+    int bit_, track_;
+    int mask_ = -2;
+    bool enabled_ = true;
+};
+
+// "Audio to:": the host output bus a device output pair is sent to (LR = main bus, 1..20).
+class AudioToBox : public juce::Component, public juce::SettableTooltipClient, private juce::Timer {
+public:
+    AudioToBox(OpenBridgeProcessor& p, int pair) : proc_(p), pair_(pair)
+    {
+        setTooltip("Audio to: the plugin output this channel is sent to");
+        startTimerHz(4);
+    }
+    static juce::String label(int bus) { return bus == 0 ? "LR" : juce::String(bus); }
+    void paint(juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat();
+        g.setColour(juce::Colour(isMouseOver() ? 0xff3a3a3a : 0xff2f2f2f));
+        g.fillRect(r);
+        g.setColour(juce::Colour(Palette::text));
+        g.setFont(uiFont(13.0f, true));
+        g.drawText(label(shown_), r, juce::Justification::centred);
+    }
+    void mouseEnter(const juce::MouseEvent&) override { repaint(); }
+    void mouseExit(const juce::MouseEvent&) override { repaint(); }
+    void mouseDown(const juce::MouseEvent&) override
+    {
+        juce::PopupMenu m;
+        for (int b = 0; b < proc_.outputPairCount(); ++b) m.addItem(b + 1, label(b), true, b == proc_.outputRoute(pair_));
+        juce::Component::SafePointer<AudioToBox> self(this);
+        m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [self](int id) {
+            if (!self || id <= 0) return;
+            self->proc_.setOutputRoute(self->pair_, id - 1);
+            self->timerCallback();
+        });
+    }
+
+private:
+    void timerCallback() override
+    {
+        if (const int r = proc_.outputRoute(pair_); r != shown_) {
+            shown_ = r;
+            repaint();
+        }
+    }
+    OpenBridgeProcessor& proc_;
+    int pair_;
+    int shown_ = -1;
 };
 } // namespace
 
@@ -1450,6 +1548,14 @@ void MixerPage::resized()
         g->toBack();
         groups_.push_back(std::move(g));
     };
+    auto audioToBox = [&](Panel& pnl, const std::string& output, juce::Rectangle<int> page) {
+        const int ch = proc_.outputChannelIndex(output);
+        if (ch < 0) return;
+        auto c = std::make_unique<AudioToBox>(proc_, ch / 2); // all pairs are stereo
+        c->setBounds(in(pnl, page));
+        pnl.addAndMakeVisible(*c);
+        extras_.push_back(std::move(c));
+    };
     auto meter = [&](Panel& pnl, const std::string& output, juce::Rectangle<int> page) {
         const int ch = proc_.outputChannelIndex(output);
         if (ch < 0) return;
@@ -1460,14 +1566,20 @@ void MixerPage::resized()
     };
     tint_ = &Tints::mod;
 
-    // ---- compressor routing (inputs of the compressor: not mapped yet)
+    // ---- compressor routing (mask of the FX setup object)
     text(routing_, "Tracks", rect(150, 170, 250, 186));
     text(routing_, "", rect(342, 165, 344, 308), 1.0f, Palette::text, true); // separator
     text(routing_, "", rect(386, 201, 394, 203), 1.0f, Palette::text, true); // L-R link
 
+    auto routeButton = [&](const juce::String& label, int bit, int track, juce::Rectangle<int> page) {
+        auto c = std::make_unique<RoutingButton>(proc_, label, bit, track);
+        c->setBounds(in(routing_, page));
+        routing_.addAndMakeVisible(*c);
+        extras_.push_back(std::move(c));
+    };
     for (int t = 0; t < 16; ++t) {
         const float x = 75.0f + 32.0f * (float)(t % 8), y = t < 8 ? 190.0f : 260.0f;
-        text(routing_, juce::String(t + 1), rect(x, y, x + 24, y + 24), 13.0f, Palette::textDim, true);
+        routeButton(juce::String(t + 1), t, t, rect(x, y, x + 24, y + 24));
     }
     {
         struct Arrow : juce::Component {
@@ -1495,10 +1607,10 @@ void MixerPage::resized()
         extras_.push_back(std::move(a));
     }
     text(routing_, "External IN", rect(345, 170, 405, 186), 14.0f);
-    text(routing_, "L", rect(362, 190, 386, 214), 13.0f, Palette::textDim, true);
-    text(routing_, "R", rect(394, 190, 418, 214), 13.0f, Palette::textDim, true);
+    routeButton("L", 16, -1, rect(362, 190, 386, 214));
+    routeButton("R", 17, -1, rect(394, 190, 418, 214));
     text(routing_, "Send", rect(420, 170, 455, 186), 14.0f);
-    text(routing_, "FX", rect(425, 190, 449, 214), 13.0f, Palette::textDim, true);
+    routeButton("FX", 18, -1, rect(425, 190, 449, 214));
 
     // ---- compressor
     knob(compressor_, "FX_CompressorThreshold", "Threshold", 577, 158);
@@ -1522,7 +1634,8 @@ void MixerPage::resized()
                      const std::string& output, bool trackButtons) {
         text(pnl, name, rect(x0, 385, x0 + 42, 400), 14.0f);
         text(pnl, "Audio to:", rect(x0 - 4, 403, x0 + 46, 417), 12.5f);
-        text(pnl, audioTo, rect(x0 + 2, 418, x0 + 40, 434), 13.0f, Palette::text, true);
+        juce::ignoreUnused(audioTo);
+        audioToBox(pnl, output, rect(x0 + 2, 418, x0 + 40, 434));
         if (trackButtons) {
             if (auto* sB = static_cast<Toggle*>(make(pnl, paramIndex("Settings_TrackSolo"), track, in(pnl, rect(x0 + 2, 437, x0 + 40, 452)), Letter, "Solo")))
                 sB->onColour = 0xfffafafa;
@@ -1545,7 +1658,7 @@ void MixerPage::resized()
     make(extIn_, paramIndex("FX_ExtInDualMono"), 0, in(extIn_, rect(192, 358, 218, 372)), Switch);
     text(extIn_, "Stereo Input", rect(68, 384, 165, 398), 14.0f);
     text(extIn_, "Audio to:", rect(66, 403, 116, 417), 12.5f);
-    text(extIn_, "20", rect(70, 420, 113, 436), 13.0f, Palette::text, true);
+    audioToBox(extIn_, "External In", rect(70, 420, 113, 436));
     make(extIn_, paramIndex("FX_ExtInStereoChorusSend"), 0, in(extIn_, centred(PX(141), PY(403), 70, 46)), Value, "Chorus");
     make(extIn_, paramIndex("FX_ExtInStereoDelaySend"), 0, in(extIn_, centred(PX(141), PY(440), 70, 46)), Value, "Delay");
     make(extIn_, paramIndex("FX_ExtInStereoReverbSend"), 0, in(extIn_, centred(PX(141), PY(482), 70, 46)), Value, "Reverb");
