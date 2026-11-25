@@ -84,6 +84,35 @@ std::vector<uint8_t> makeAutomation(uint32_t seq, uint8_t objectType, uint16_t a
     return m;
 }
 
+std::vector<std::vector<uint8_t>> makeChunkedTransaction(uint8_t channel, uint32_t seq, uint8_t cls, uint8_t type,
+                                                         uint16_t arg, const uint8_t* payload, uint32_t len)
+{
+    // chunks of at most 995 bytes, each with its offset in the transaction, the
+    // total length and the byte sum of the whole payload
+    std::vector<std::vector<uint8_t>> out;
+    const uint16_t sum = byteSum16(payload, len);
+    uint32_t off = 0;
+    do {
+        const uint16_t n = (uint16_t)std::min<uint32_t>(kMaxChunkPayload, len - off);
+        std::vector<uint8_t> m(kMsgHeaderBytes + n);
+        if (n) std::copy(payload + off, payload + off + n, m.begin() + kMsgHeaderBytes);
+        MsgHeader h;
+        h.channel = channel;
+        h.seq = seq;
+        h.cls = cls;
+        h.type = type;
+        h.arg = arg;
+        h.offset = off;
+        h.totalLength = len;
+        h.chunkLength = n;
+        h.sumA = sum;
+        h.write(m.data());
+        out.push_back(std::move(m));
+        off += n;
+    } while (off < len);
+    return out;
+}
+
 std::vector<uint8_t> makeTransaction(uint8_t channel, uint32_t seq, uint8_t cls, uint8_t type, uint16_t arg,
                                      const uint8_t* payload, uint16_t len)
 {

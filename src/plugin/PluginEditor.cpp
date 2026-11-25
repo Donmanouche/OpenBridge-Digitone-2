@@ -90,6 +90,10 @@ HeaderBar::HeaderBar(OpenBridgeProcessor& p) : proc_(p)
         addAndMakeVisible(*b);
     }
     (proc_.uiPresetBrowser ? presetBrowser_ : kitEditor_).setToggleState(true, juce::dontSendNotification);
+    totalRecall_.getProperties().set("outlined", true);
+    totalRecall_.setTooltip("Total Recall: the device state stored and managed by the plugin");
+    totalRecall_.onClick = [this] { if (onTotalRecall) onTotalRecall(); };
+    addAndMakeVisible(totalRecall_);
     kitEditor_.onClick = [this] { if (onPage) onPage(0); };
     presetBrowser_.onClick = [this] { if (onPage) onPage(1); };
     refreshDevices();
@@ -166,6 +170,7 @@ void HeaderBar::resized()
 {
     zoom_.setBounds(262, 6, 74, 23);
     device_.setBounds(346, 6, 290, 23);
+    totalRecall_.setBounds(650, 6, 120, 23);
     presetBrowser_.setBounds(getWidth() - 128, 0, 128, getHeight());
     kitEditor_.setBounds(getWidth() - 222, 0, 94, getHeight());
     keyboard_.setBounds(getWidth() - 310, 2, 50, getHeight() - 4);
@@ -218,6 +223,142 @@ void TrackTabs::mouseDown(const juce::MouseEvent& e)
 }
 
 // ------------------------------------------------------------------------------------------ footer
+// ------------------------------------------------------------------------------------------ Total Recall
+TotalRecallNotice::TotalRecallNotice(OpenBridgeProcessor& p) : proc_(p)
+{
+    for (auto* b : {&plugin_, &device_, &cancel_}) {
+        b->getProperties().set("outlined", true);
+        addAndMakeVisible(*b);
+    }
+    using Choice = ob::DeviceModel::TrChoice;
+    plugin_.onClick = [this] { proc_.model().trChoose(Choice::PluginState); };
+    device_.onClick = [this] { proc_.model().trChoose(Choice::DeviceState); };
+    cancel_.onClick = [this] { proc_.model().trChoose(Choice::Cancel); };
+    setVisible(false);
+    startTimerHz(4);
+}
+
+void TotalRecallNotice::timerCallback()
+{
+    const bool show = proc_.model().trState() == 8; // the device waits for the choice
+    if (show != isVisible()) {
+        setVisible(show);
+        if (show) toFront(false);
+    }
+}
+
+void TotalRecallNotice::paint(juce::Graphics& g)
+{
+    g.fillAll(C(Palette::header));
+    g.setColour(C(Palette::accent));
+    g.drawRect(getLocalBounds(), 2);
+    g.setColour(C(Palette::text));
+    g.setFont(uiFont(16.5f, true));
+    g.drawText("Which state would you like to use for total recall?", getLocalBounds().reduced(18, 0).removeFromTop(40),
+               juce::Justification::centredLeft);
+}
+
+void TotalRecallNotice::resized()
+{
+    auto r = getLocalBounds().reduced(18, 10);
+    r.removeFromTop(32);
+    for (auto* b : {&plugin_, &device_, &cancel_}) {
+        b->setBounds(r.removeFromLeft(150));
+        r.removeFromLeft(12);
+    }
+}
+
+TotalRecallPanel::TotalRecallPanel(OpenBridgeProcessor& p) : proc_(p)
+{
+    for (auto* b : {&enable_, &disable_, &reactivate_, &close_}) {
+        b->getProperties().set("outlined", true);
+        addChildComponent(*b);
+    }
+    close_.setVisible(true);
+    addChildComponent(autoSync_);
+    autoSync_.setColour(juce::ToggleButton::textColourId, C(Palette::text));
+    autoSync_.setColour(juce::ToggleButton::tickColourId, C(Palette::accent));
+    enable_.onClick = [this] { proc_.model().trEnableOrSync(); };
+    disable_.onClick = [this] { proc_.model().trDisable(); };
+    reactivate_.onClick = [this] { proc_.model().trReactivate(); };
+    autoSync_.onClick = [this] { proc_.model().trSetAutoSync(autoSync_.getToggleState()); };
+    close_.onClick = [this] { setVisible(false); };
+    disable_.setTooltip("Disable Total Recall.");
+    autoSync_.setTooltip("Automatic Sync will synchronize your device with your DAW without you having to remember to save "
+                         "the device state manually, just save your project.");
+    reactivate_.setTooltip("Reactivate Total Recall, the device and plugin will show you options of where to load your "
+                           "Total Recall data from.");
+    setVisible(false);
+    startTimerHz(4);
+}
+
+void TotalRecallPanel::timerCallback()
+{
+    if (isVisible()) refresh();
+}
+
+void TotalRecallPanel::refresh()
+{
+    auto& m = proc_.model();
+    const bool enabled = m.trEnabled();
+    juce::String text, warning;
+    if (enabled) {
+        const auto t = juce::Time(m.trTimestamp());
+        text = "Total Recall is enabled. The device state was last synced at " + t.toString(true, true, false, true);
+        warning = m.trState() == 2 ? "Total Recall session is active in the device!" : "Total Recall session is not active in the device!";
+        enable_.setButtonText("SYNC NOW");
+        enable_.setTooltip({});
+    } else {
+        text = "The device state can optionally be stored and managed by the plugin, for Total Recall.";
+        enable_.setButtonText("ENABLE NOW");
+        enable_.setTooltip("Activate Total Recall synchronization between your Elektron device and DAW.");
+    }
+    enable_.setVisible(true);
+    disable_.setVisible(enabled);
+    autoSync_.setVisible(enabled);
+    autoSync_.setToggleState(m.trAutoSync(), juce::dontSendNotification);
+    reactivate_.setVisible(enabled && m.trState() != 2);
+    if (text != text_ || warning != warning_) {
+        text_ = text;
+        warning_ = warning;
+        repaint();
+    }
+}
+
+void TotalRecallPanel::paint(juce::Graphics& g)
+{
+    g.fillAll(C(Palette::header));
+    g.setColour(C(Palette::outline));
+    g.drawRect(getLocalBounds(), 2);
+    auto r = getLocalBounds().reduced(20, 14);
+    g.setColour(C(Palette::text));
+    g.setFont(uiFont(17.0f, true));
+    g.drawText("DEVICE STATE TOTAL RECALL", r.removeFromTop(26), juce::Justification::centredLeft);
+    r.removeFromTop(6);
+    g.setFont(uiFont(14.5f));
+    g.setColour(C(Palette::textDim));
+    g.drawFittedText(text_, r.removeFromTop(40), juce::Justification::topLeft, 2);
+    g.drawFittedText(juce::String(proc_.model().trStatusText()), r.removeFromTop(40), juce::Justification::topLeft, 2);
+    if (warning_.isNotEmpty()) {
+        g.setColour(C(Palette::text));
+        g.drawText(warning_, r.removeFromTop(22), juce::Justification::centredLeft);
+    }
+}
+
+void TotalRecallPanel::resized()
+{
+    auto r = getLocalBounds().reduced(20, 14);
+    close_.setBounds(r.getRight() - 80, r.getY(), 80, 26);
+    auto row = r.removeFromBottom(30);
+    enable_.setBounds(row.removeFromLeft(130));
+    row.removeFromLeft(10);
+    disable_.setBounds(row.removeFromLeft(110));
+    row.removeFromLeft(10);
+    reactivate_.setBounds(row.removeFromLeft(130));
+    r.removeFromBottom(8);
+    autoSync_.setBounds(r.removeFromBottom(26).removeFromLeft(320));
+}
+
 void Footer::paint(juce::Graphics& g)
 {
     g.fillAll(C(Palette::header));
@@ -228,6 +369,7 @@ void Footer::paint(juce::Graphics& g)
     if (!proc_.isAudioOwner()) status += "  (audio used by another OpenBridge instance)";
     if (proc_.model().connected()) status += "  -  control channel OK";
     if (!proc_.midiOutputOpen()) status += "  -  device MIDI port not found";
+    if (proc_.model().trEnabled() || proc_.model().trState() > 1) status += "  -  " + juce::String(proc_.model().trStatusText());
     g.setColour(C(Palette::textDim));
     g.drawText(status, r, juce::Justification::centredLeft);
     g.setColour(C(0xfff0f0f0));
@@ -239,13 +381,15 @@ void Footer::paint(juce::Graphics& g)
 
 // ------------------------------------------------------------------------------------------ editor
 OpenBridgeEditor::OpenBridgeEditor(OpenBridgeProcessor& p)
-    : AudioProcessorEditor(&p), proc_(p), header_(p), footer_(p)
+    : AudioProcessorEditor(&p), proc_(p), header_(p), footer_(p), trNotice_(p), trPanel_(p)
 {
     setLookAndFeel(&lnf_);
     addAndMakeVisible(content_);
     content_.addAndMakeVisible(header_);
     content_.addAndMakeVisible(tabs_);
     content_.addAndMakeVisible(footer_);
+    content_.addChildComponent(trNotice_);
+    content_.addChildComponent(trPanel_);
     content_.addChildComponent(keyboard_);
     keyboard_.setAvailableRange(24, 108); // C1 .. C8, keys sized to fill the editor's width
     keyboard_.setLowestVisibleKey(24);
@@ -262,6 +406,10 @@ OpenBridgeEditor::OpenBridgeEditor(OpenBridgeProcessor& p)
     header_.onPage = [this](int page) {
         presetBrowser_ = proc_.uiPresetBrowser = page == 1;
         showPage(proc_.uiPage);
+    };
+    header_.onTotalRecall = [this] {
+        trPanel_.setVisible(!trPanel_.isVisible());
+        if (trPanel_.isVisible()) trPanel_.toFront(false);
     };
     header_.onKeyboard = [this] {
         showKeyboard_ = proc_.uiKeyboard = !showKeyboard_;
@@ -325,6 +473,8 @@ void OpenBridgeEditor::resized()
     auto r = content_.getLocalBounds();
     header_.setBounds(r.removeFromTop(36));
     footer_.setBounds(r.removeFromBottom(40));
+    trNotice_.setBounds((kBaseWidth - 720) / 2, 44, 720, 90);
+    trPanel_.setBounds(640, 40, 640, 240);
     if (showKeyboard_) {
         keyboard_.setBounds(r.removeFromBottom(80));
         // white keys between C1 and C8: 7 per octave + the last C

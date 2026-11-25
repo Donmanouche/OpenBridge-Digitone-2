@@ -36,8 +36,13 @@ struct ParamDef {
 const std::vector<ParamDef>& digitone2Params();
 const ParamDef* findParam(const std::string& key);
 
+// Machines of the alternative firmware (Digitakt II machines on the Digitone II) start at 8 (One Shot);
+// their parameters use sections 40 + (machine - 8) (Digitone2ExtraParams.inc).
+constexpr int kFirstAltMachine = 8, kAltMachineSection = 40;
+bool isAltMachine(int machine);          // a machine of the alternative firmware with known parameters
+
 // Section of the machine / filter machine a Sound parameter belongs to, or -1 if it is common.
-int machineOf(const ParamDef& p);        // 0..4
+int machineOf(const ParamDef& p);        // 0..4, 8 (One Shot)
 int filterMachineOf(const ParamDef& p);  // 0..5
 
 const char* machineName(int machine);       // "FM Tone" ...

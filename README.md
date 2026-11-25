@@ -17,21 +17,25 @@ Linux implementation of Elektron Overbridge for the **Elektron Digitone II**:
   read from the device when the plugin opens.
 - **Preset Browser**: kit track presets, +Drive library (banks A–H, tags, filters); load a
   +Drive preset into a track; Clear a track.
+- **Changes made on the device** (knobs, mixer, mutes) are followed by the plugin.
+- **Total Recall**: the device's whole project can be stored in the DAW project and restored when
+  the DAW project is opened (see below).
 
 ## Requirements
 
 - Linux x86_64, **Ubuntu 22.04 or later** (or a distribution with glibc 2.35 or later).
-- An Elektron Digitone II on **OS 1.12 or later**. Older OS versions do not answer the mixer and FX messages.
+- An Elektron Digitone II on **OS 1.11 or later**. Older OS versions do not answer the mixer and FX messages.
+- On the Digitone, **USB CONFIG** set to **OVERBRIDGE**.
 
 ## Installation
 
 ### .deb package (Ubuntu / Debian)
 
-Download `openbridge-digitone2_0.1_amd64.deb` from the
+Download `openbridge-digitone2_0.1.5_amd64.deb` from the
 [Releases](https://github.com/Donmanouche/OpenBridge-Digitone-2/releases) page, then:
 
 ```bash
-sudo apt install ./openbridge-digitone2_0.1_amd64.deb
+sudo apt install ./openbridge-digitone2_0.1.5_amd64.deb
 ```
 
 It installs:
@@ -43,7 +47,7 @@ Unplug and replug the Digitone after installing.
 
 ### Archive
 
-`openbridge-digitone2-0.1-linux-x86_64.tar.gz` holds the same files.
+`openbridge-digitone2-0.1.5-linux-x86_64.tar.gz` holds the same files.
 
 1. Copy `OpenBridge Digitone II.vst3` to `~/.vst3/`.
 2. Install the udev rule:
@@ -55,6 +59,22 @@ Unplug and replug the Digitone after installing.
    ```bash
    sudo udevadm control --reload-rules
    ```
+
+## Total Recall
+
+Click **Total Recall** in the plugin's header:
+
+- **ENABLE NOW** starts a session: the Digitone's current project is copied into the plugin and saved
+  with the DAW project. **SYNC NOW** copies it again.
+- **Sync automatically on save** (on by default): the project is copied again each time the DAW
+  project is saved (up to 10 s; otherwise the previous copy is saved).
+- When the DAW project is opened again, or the Digitone is reconnected, the plugin and the Digitone
+  ask which state to use: **Plugin State** sends the saved project to the Digitone, **Device State**
+  keeps the Digitone's current project (and copies it into the plugin), **Cancel** stops the session.
+  The question can also be answered on the Digitone.
+- **DISABLE** ends Total Recall and removes the copy from the DAW project.
+
+Plugin State replaces the project currently loaded on the Digitone.
 
 ## Building from source
 

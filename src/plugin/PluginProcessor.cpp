@@ -395,6 +395,16 @@ void OpenBridgeProcessor::getStateInformation(juce::MemoryBlock& destData)
     s.setProperty("libraryBank", uiLibraryBank, nullptr);
     s.setProperty("tagFilter", (juce::int64)uiTagFilter, nullptr);
     s.setProperty("hideFilters", uiHideFilters, nullptr);
+    // Total Recall: session id (0: disabled), the device's project
+    // (LZ4 frame as the device sends it), last sync time, "Sync automatically on save".
+    if (model_) {
+        const auto tr = model_->trGetSaved();
+        s.setProperty("totalRecallSession", (juce::int64)tr.sessionId, nullptr);
+        s.setProperty("totalRecallTimestamp", (juce::int64)tr.timestamp, nullptr);
+        s.setProperty("totalRecallAutoSync", tr.autoSync, nullptr);
+        if (tr.sessionId != 0 && !tr.image.empty())
+            s.setProperty("totalRecallProject", juce::MemoryBlock(tr.image.data(), tr.image.size()).toBase64Encoding(), nullptr);
+    }
     juce::MemoryOutputStream os(destData, false);
     s.writeToStream(os);
 }
@@ -412,6 +422,20 @@ void OpenBridgeProcessor::setStateInformation(const void* data, int sizeInBytes)
     uiTagFilter = (uint32_t)(juce::int64)s.getProperty("tagFilter", 0);
     uiHideFilters = (bool)s.getProperty("hideFilters", false);
     selectDevice(s.getProperty("device", "").toString().toStdString());
+    if (model_) {
+        ob::DeviceModel::TrSaved tr;
+        tr.sessionId = (uint32_t)(juce::int64)s.getProperty("totalRecallSession", 0);
+        tr.timestamp = (juce::int64)s.getProperty("totalRecallTimestamp", 0);
+        tr.autoSync = (bool)s.getProperty("totalRecallAutoSync", true);
+        juce::MemoryBlock mb;
+        if (tr.sessionId != 0 && mb.fromBase64Encoding(s.getProperty("totalRecallProject").toString()) && mb.getSize() > 1000) {
+            const auto* b = static_cast<const uint8_t*>(mb.getData());
+            tr.image.assign(b, b + mb.getSize());
+        } else {
+            tr.sessionId = 0;
+        }
+        model_->trSetSaved(std::move(tr));
+    }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new OpenBridgeProcessor(); }

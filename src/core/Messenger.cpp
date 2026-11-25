@@ -18,6 +18,8 @@ int64_t nowMs()
 constexpr int kHeartbeatMs = 500;
 constexpr int kHeartbeatTimeoutMs = 3000;
 constexpr int kReadTimeoutMs = 1500;
+constexpr int kProjectReadTimeoutMs = 20000;
+constexpr uint8_t kReadProject = 0x1d;
 constexpr int kReadTries = 3;
 constexpr int kMaxPacket = 512;
 
@@ -232,18 +234,23 @@ void Messenger::writerLoop()
             PendingWrite w = std::move(writeQueue_.front());
             writeQueue_.erase(writeQueue_.begin());
             const uint32_t s = seq_++;
-            auto pkt = makeTransaction(kAutomationChannel, s, w.cls, w.type, w.arg, w.payload.data(), (uint16_t)w.payload.size());
             l.unlock();
-            send(pkt);
+            if (w.payload.size() <= kMaxChunkPayload)
+                send(makeTransaction(kAutomationChannel, s, w.cls, w.type, w.arg, w.payload.data(), (uint16_t)w.payload.size()));
+            else
+                for (auto& chunk : makeChunkedTransaction(kAutomationChannel, s, w.cls, w.type, w.arg, w.payload.data(), (uint32_t)w.payload.size()))
+                    send(chunk);
             l.lock();
         }
         // read requests: retries of timed out ones, then new ones (a few in flight at a time)
         const auto tnow = std::chrono::steady_clock::now();
         for (auto it = inFlight_.begin(); it != inFlight_.end();) {
-            if (tnow - it->second.sent > std::chrono::milliseconds(kReadTimeoutMs)) {
+            // the project (type 0x1D, ~90 kB) takes the device a few seconds to prepare: one long wait
+            const bool project = it->second.type == kReadProject;
+            if (tnow - it->second.sent > std::chrono::milliseconds(project ? kProjectReadTimeoutMs : kReadTimeoutMs)) {
                 PendingRead r = std::move(it->second);
                 it = inFlight_.erase(it);
-                if (r.tries < kReadTries) readQueue_.insert(readQueue_.begin(), std::move(r));
+                if (!project && r.tries < kReadTries) readQueue_.insert(readQueue_.begin(), std::move(r));
                 else if (r.cb) {
                     auto cb = std::move(r.cb);
                     l.unlock();
@@ -332,6 +339,12 @@ void Messenger::parse()
             continue;
         }
         part.data.insert(part.data.end(), data, data + h.chunkLength);
+        if (h.cls == 0x21 || h.cls == 0x23) {
+            // a long reply is still arriving (a project is ~83 kB): its request has not timed out
+            std::lock_guard<std::mutex> l(lock_);
+            auto it = inFlight_.find(h.reserved);
+            if (it != inFlight_.end()) it->second.sent = std::chrono::steady_clock::now();
+        }
         if (part.data.size() >= h.totalLength) {
             Message m{part.header, std::move(part.data)};
             partials_.erase(key);

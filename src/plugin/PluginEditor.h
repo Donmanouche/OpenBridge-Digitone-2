@@ -29,6 +29,7 @@ public:
     std::function<void(float)> onZoom;
     std::function<void(int)> onPage;      // 0 = kit editor, 1 = preset browser
     std::function<void()> onKeyboard;
+    std::function<void()> onTotalRecall;
 
 private:
     OpenBridgeProcessor& proc_;
@@ -38,7 +39,7 @@ private:
         KeyboardButton() : juce::Button("keyboard") {}
         void paintButton(juce::Graphics&, bool over, bool down) override;
     } keyboard_;
-    juce::TextButton kitEditor_{"Kit Editor"}, presetBrowser_{"Preset Browser"};
+    juce::TextButton kitEditor_{"Kit Editor"}, presetBrowser_{"Preset Browser"}, totalRecall_{"Total Recall"};
     std::vector<std::string> deviceIds_;
 };
 
@@ -67,6 +68,35 @@ public:
 private:
     void timerCallback() override { repaint(); }
     OpenBridgeProcessor& proc_;
+};
+
+// Total Recall: the question asked while the device waits for the choice (state 8).
+class TotalRecallNotice : public juce::Component, private juce::Timer {
+public:
+    explicit TotalRecallNotice(OpenBridgeProcessor& p);
+    void paint(juce::Graphics&) override;
+    void resized() override;
+
+private:
+    void timerCallback() override;
+    OpenBridgeProcessor& proc_;
+    juce::TextButton plugin_{"Plugin State"}, device_{"Device State"}, cancel_{"Cancel"};
+};
+
+// Total Recall settings ("DEVICE STATE TOTAL RECALL").
+class TotalRecallPanel : public juce::Component, private juce::Timer {
+public:
+    explicit TotalRecallPanel(OpenBridgeProcessor& p);
+    void paint(juce::Graphics&) override;
+    void resized() override;
+
+private:
+    void timerCallback() override;
+    void refresh();
+    OpenBridgeProcessor& proc_;
+    juce::TextButton enable_{"ENABLE NOW"}, disable_{"DISABLE"}, reactivate_{"REACTIVATE"}, close_{"Close"};
+    juce::ToggleButton autoSync_{"Sync automatically on save"};
+    juce::String text_, warning_;
 };
 
 } // namespace obui
@@ -98,6 +128,8 @@ private:
     obui::HeaderBar header_;
     obui::TrackTabs tabs_;
     obui::Footer footer_;
+    obui::TotalRecallNotice trNotice_;
+    obui::TotalRecallPanel trPanel_;
     std::unique_ptr<juce::Component> page_;
     juce::MidiKeyboardState keyState_;
     juce::MidiKeyboardComponent keyboard_{keyState_, juce::MidiKeyboardComponent::horizontalKeyboard};

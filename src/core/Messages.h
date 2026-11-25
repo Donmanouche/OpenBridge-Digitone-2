@@ -57,6 +57,10 @@ enum class EditObject : uint8_t { Sound = 5, Fx = 9, Settings = 0x1b };
 std::vector<uint8_t> makeAutomation(uint32_t seq, uint8_t objectType, uint16_t arg, uint16_t a, uint16_t b, uint16_t value);
 
 // Generic transaction (single chunk; payload up to 995 bytes).
+// Transaction larger than one chunk (e.g. a whole project, type 0x1D): chunks of kMaxChunkPayload bytes.
+constexpr uint32_t kMaxChunkPayload = 995;
+std::vector<std::vector<uint8_t>> makeChunkedTransaction(uint8_t channel, uint32_t seq, uint8_t cls, uint8_t type,
+                                                         uint16_t arg, const uint8_t* payload, uint32_t len);
 std::vector<uint8_t> makeTransaction(uint8_t channel, uint32_t seq, uint8_t cls, uint8_t type, uint16_t arg,
                                      const uint8_t* payload, uint16_t len);
 

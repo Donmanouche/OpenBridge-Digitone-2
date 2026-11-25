@@ -76,6 +76,39 @@ public:
     // changes that byte and writes it back (class 0x10 type 6). The device resets the machine's
     // parameters, as when the machine is changed on the device.
     void setMachine(int track, int machine);
+    // True when the device runs the alternative firmware with the Digitakt II machines (One Shot ...).
+    bool altMachinesAvailable() const;
+
+    // Total Recall: last session state the device reported (notification 0x2B: 1 disabled, 2 active,
+    // 3 aborted, 8 choose device or plugin, 9 send the project, 10 the device is master ...), how many
+    // state notifications arrived, and how many session id changes (notification 0x2C).
+    int totalRecallState() const { return trState_.load(); }
+    int totalRecallStateCount() const { return trStateCount_.load(); }
+    int totalRecallSessionChanges() const { return trSessionChanges_.load(); }
+
+    // ---- Total Recall: the device's whole project kept
+    // in the host project. trState() is the session state the device reports (notification 0x2B):
+    // 0 undetermined, 1 disabled, 2 active, 3 aborted, 4..6 new session, 7..10 recall session
+    // (8: waiting for the user's choice), 11/12 transfer host -> device / device -> host.
+    int trState() const { return trState_.load(); }
+    bool trEnabled() const;            // a session id and a project image are stored
+    bool trAutoSync() const { return trAutoSync_.load(); }
+    void trSetAutoSync(bool on) { trAutoSync_ = on; }
+    int64_t trTimestamp() const;       // last sync, ms since the epoch (0: never)
+    std::string trStatusText() const;  // message for trState()
+    void trEnableOrSync();             // ENABLE NOW (new session, the device's state kept) / SYNC NOW
+    void trDisable();
+    void trReactivate();               // recall session: the device and the plugin offer the choice again
+    enum class TrChoice { Cancel, PluginState, DeviceState };
+    void trChoose(TrChoice c);         // answer to "Which state would you like to use?" (trState() == 8)
+    struct TrSaved {
+        uint32_t sessionId = 0;        // 0: Total Recall disabled
+        std::vector<uint8_t> image;    // LZ4 frame of the project as the device sends it (type 0x1D)
+        int64_t timestamp = 0;
+        bool autoSync = true;
+    };
+    void trSetSaved(TrSaved s);        // host project restored: starts a recall session
+    TrSaved trGetSaved();              // host saves: with auto-sync, re-reads the project first (10 s max)
     void setFilterMachine(int track, int filter);
 
     // Loads a sound container (e.g. from a +Drive preset file, read over SysEx) into a track,
@@ -169,6 +202,7 @@ private:
     std::array<std::vector<uint8_t>, kTracks> setups_; // guarded by nameLock_
     std::vector<uint8_t> voiceConfig_, kitSetup_;    // guarded by nameLock_
     void loadKit(Messenger* m);
+    void subscribe(Messenger* m); // device -> host parameter notifications
     void loadMixer(Messenger* m);
     void writeKitObject(uint8_t type, std::vector<uint8_t> blob);
 
@@ -182,6 +216,25 @@ private:
 
     std::atomic<int64_t> lastLoadMs_{0};
     std::atomic<uint32_t> pendingReload_{0}; // bit per track, set by notifications
+    std::atomic<bool> pendingMixer_{false};
+    std::atomic<int> trState_{-1}, trStateCount_{0}, trSessionChanges_{0};
+    // Total Recall session (see pollTotalRecall)
+    void pollTotalRecall(Messenger* m);
+    void trHandleState(Messenger* m, int state);
+    void trRequest(Messenger* m, int mode, uint32_t id);
+    void trReadProject(Messenger* m, std::function<void(bool)> done = {});
+    mutable std::mutex trLock_;
+    std::vector<uint8_t> trImage_;
+    uint32_t trSessionId_ = 0;
+    int64_t trTimestamp_ = 0;
+    std::vector<int> trStates_;               // states from notifications, handled by poll (trLock_)
+    std::atomic<bool> trWork_{false};         // states, actions or a recall to handle
+    std::atomic<bool> trAutoSync_{true};
+    std::atomic<int> trPending_{0};           // 9 / 10: the choice, applied when the device accepts (state 6)
+    std::atomic<int> trActions_{0};           // editor requests (kTr... bits), executed by poll
+    std::atomic<bool> trInitiate_{false};     // start a recall session once the device is ready
+    std::atomic<bool> trReading_{false};
+    int trGeneration_ = -1;   // project settings changed: read the mixer state again
     std::array<std::atomic<int64_t>, kTracks> reloadAtMs_{};  // delayed reload after a storage operation
     void applyJob(int track, std::vector<uint8_t> container);
     std::array<std::vector<uint8_t>, kTracks> rawSounds_; // last sound container read, guarded by nameLock_

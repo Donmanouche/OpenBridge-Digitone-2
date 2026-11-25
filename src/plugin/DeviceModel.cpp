@@ -1,5 +1,8 @@
 #include "DeviceModel.h"
 
+#include <future>
+#include <random>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -154,7 +157,8 @@ void DeviceModel::poll()
         if (at && now >= at && reloadAtMs_[(size_t)t].compare_exchange_strong(at, 0))
             pendingReload_ |= 1u << t;
     }
-    if (g == generation_ && pendingReload_.load() == 0) return;
+    const bool trWork = trWork_.load() || trGeneration_ != g;
+    if (g == generation_ && pendingReload_.load() == 0 && !pendingMixer_.load() && !trWork) return;
     std::lock_guard<std::mutex> l(session_->messengerLock());
     auto* m = session_->messenger();
     if (!m) return;
@@ -168,6 +172,262 @@ void DeviceModel::poll()
             if (r & (1u << t)) loadTrack(m, t);
         if (r == 0xffffu) loadKit(m);
     }
+    if (pendingMixer_.exchange(false) && session_->protocolVersion() >= 129) loadMixer(m);
+    if (session_->protocolVersion() >= 129) pollTotalRecall(m);
+}
+
+// ------------------------------------------------------------------------------------------ Total Recall
+// Total Recall session. Requests:
+// class 0x50 {mode, session id}; the device answers with state notifications 0x2B.
+//  - ENABLE NOW: new id, mode 4 (create a new session), choice "device" remembered → state 6
+//    (accepted) → handled as state 10.
+//  - Recall (host project restored, device connected, REACTIVATE): mode 7 + saved id → state 8: the
+//    device and the plugin ask "which state?"; plugin state: mode 4 + id, 9 remembered; device state:
+//    mode 4 + id, 10 remembered; cancel: mode 3. The device may also be answered on its own screen
+//    (state 9 / 10 directly).
+//  - State 9: mode 0x0B + id, then the project write (type 0x1D); state 10: mode 0x0C + id, then the
+//    project read, kept in the host project → state 2 (active).
+//  - SYNC NOW and the save with "Sync automatically on save": mode 0x0C + id and a project read.
+//  - DISABLE: id 0, image cleared, mode 3.
+
+namespace {
+enum : int { kTrEnable = 1, kTrDisable = 2, kTrCancel = 4, kTrPlugin = 8, kTrDevice = 16 };
+
+uint32_t newSessionId()
+{
+    static std::mt19937 rng{std::random_device{}()};
+    uint32_t id = 0;
+    while (id == 0) id = (uint32_t)rng(); // 0 is "no session"
+    return id;
+}
+
+int64_t epochMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+} // namespace
+
+void DeviceModel::trRequest(Messenger* m, int mode, uint32_t id)
+{
+    m->write(0x50, 0, 0, {(uint8_t)mode, (uint8_t)(id >> 24), (uint8_t)(id >> 16), (uint8_t)(id >> 8), (uint8_t)id});
+}
+
+void DeviceModel::trReadProject(Messenger* m, std::function<void(bool)> done)
+{
+    trReading_ = true;
+    std::weak_ptr<DeviceModel> weak = shared_from_this();
+    m->read(0x1d, 0, [weak, done](bool ok, const Message& msg) {
+        auto self = weak.lock();
+        if (!self) return;
+        ok = ok && msg.payload.size() > 1000 && msg.payload[0] == 0x04 && msg.payload[1] == 0x22;
+        if (ok) {
+            std::lock_guard<std::mutex> l(self->trLock_);
+            self->trImage_ = msg.payload;
+            self->trTimestamp_ = epochMs();
+        }
+        self->trReading_ = false;
+        if (done) done(ok);
+    });
+}
+
+void DeviceModel::trHandleState(Messenger* m, int st)
+{
+    const int previous = trState_.exchange(st);
+    if (st == 2 && (previous == 9 || previous == 11)) reload(); // the device loaded the plugin's project
+    uint32_t id;
+    {
+        std::lock_guard<std::mutex> l(trLock_);
+        id = trSessionId_;
+    }
+    if (st == 6) { // new session accepted: continue with the remembered choice
+        trHandleState(m, trPending_.load());
+    } else if (st == 9) { // the plugin's state: send the project to the device
+        std::vector<uint8_t> img;
+        {
+            std::lock_guard<std::mutex> l(trLock_);
+            img = trImage_;
+        }
+        if (img.empty()) {
+            trRequest(m, 3, 0);
+            return;
+        }
+        trRequest(m, 0x0b, id);
+        m->write(0x10, 0x1d, 0, std::move(img));
+    } else if (st == 10) { // the device's state: read its project
+        trRequest(m, 0x0c, id);
+        trReadProject(m);
+    }
+}
+
+void DeviceModel::pollTotalRecall(Messenger* m)
+{
+    const int g = session_->generation();
+    if (trGeneration_ != g) { // (re)connected: state unknown; recall once the device's state is read
+        trGeneration_ = g;
+        trState_ = 0;
+        trInitiate_ = true;
+        trWork_ = true;
+    }
+    std::vector<int> states;
+    {
+        std::lock_guard<std::mutex> l(trLock_);
+        states.swap(trStates_);
+    }
+    for (int st : states) trHandleState(m, st);
+
+    if (const int a = trActions_.exchange(0)) {
+        uint32_t id;
+        {
+            std::lock_guard<std::mutex> l(trLock_);
+            id = trSessionId_;
+        }
+        if (a & kTrDisable) {
+            {
+                std::lock_guard<std::mutex> l(trLock_);
+                trSessionId_ = 0;
+                trImage_.clear();
+            }
+            trRequest(m, 3, 0);
+        } else if (a & kTrEnable) {
+            if (id == 0 || trState_.load() != 2) { // ENABLE NOW: new session, the device's state kept
+                id = newSessionId();
+                {
+                    std::lock_guard<std::mutex> l(trLock_);
+                    trSessionId_ = id;
+                }
+                trRequest(m, 4, id);
+                trPending_ = 10;
+            } else { // SYNC NOW
+                trRequest(m, 0x0c, id);
+                trReadProject(m);
+            }
+        }
+        if (trState_.load() == 8) { // answer to "Which state would you like to use for total recall?"
+            if (a & kTrCancel) {
+                trRequest(m, 3, 0);
+            } else if (a & (kTrPlugin | kTrDevice)) {
+                trRequest(m, 4, id);
+                trPending_ = (a & kTrPlugin) ? 9 : 10;
+            }
+        }
+    }
+
+    if (trInitiate_.load()) { // recall session: once the sounds are read (the device is ready)
+        bool loaded = true;
+        for (int t = 0; t < kTracks; ++t) loaded = loaded && trackLoaded(t);
+        if (!loaded) return;
+        trInitiate_ = false;
+        const int st = trState_.load();
+        if (trEnabled() && st != 7 && st != 8) {
+            uint32_t id;
+            {
+                std::lock_guard<std::mutex> l(trLock_);
+                id = trSessionId_;
+            }
+            trState_ = 7;
+            trRequest(m, 7, id);
+        }
+    }
+    std::lock_guard<std::mutex> l(trLock_);
+    trWork_ = !trStates_.empty() || trActions_.load() != 0 || trInitiate_.load();
+}
+
+bool DeviceModel::trEnabled() const
+{
+    std::lock_guard<std::mutex> l(trLock_);
+    return trSessionId_ != 0 && !trImage_.empty();
+}
+
+int64_t DeviceModel::trTimestamp() const
+{
+    std::lock_guard<std::mutex> l(trLock_);
+    return trTimestamp_;
+}
+
+void DeviceModel::trEnableOrSync()
+{
+    trActions_ |= kTrEnable;
+    trWork_ = true;
+}
+
+void DeviceModel::trDisable()
+{
+    trActions_ |= kTrDisable;
+    trWork_ = true;
+}
+
+void DeviceModel::trReactivate()
+{
+    trInitiate_ = true;
+    trWork_ = true;
+}
+
+void DeviceModel::trChoose(TrChoice c)
+{
+    trActions_ |= c == TrChoice::Cancel ? kTrCancel : c == TrChoice::PluginState ? kTrPlugin : kTrDevice;
+    trWork_ = true;
+}
+
+void DeviceModel::trSetSaved(TrSaved s)
+{
+    {
+        std::lock_guard<std::mutex> l(trLock_);
+        trSessionId_ = s.sessionId;
+        trImage_ = std::move(s.image);
+        trTimestamp_ = s.timestamp;
+    }
+    trAutoSync_ = s.autoSync;
+    trReactivate();
+}
+
+DeviceModel::TrSaved DeviceModel::trGetSaved()
+{
+    // "Sync automatically on save": re-read the device's project before saving, 10 s at most
+    // (then the previous image is saved).
+    uint32_t id;
+    {
+        std::lock_guard<std::mutex> l(trLock_);
+        id = trSessionId_;
+    }
+    if (trAutoSync_.load() && id != 0 && trState_.load() == 2 && session_) {
+        auto done = std::make_shared<std::promise<bool>>();
+        auto result = done->get_future();
+        bool sent = false;
+        {
+            std::lock_guard<std::mutex> l(session_->messengerLock());
+            if (auto* m = session_->messenger()) {
+                trRequest(m, 0x0c, id);
+                trReadProject(m, [done](bool ok) { done->set_value(ok); });
+                sent = true;
+            }
+        }
+        if (sent) result.wait_for(std::chrono::milliseconds(10000));
+    }
+    std::lock_guard<std::mutex> l(trLock_);
+    TrSaved s;
+    s.sessionId = trSessionId_;
+    s.image = trImage_;
+    s.timestamp = trTimestamp_;
+    s.autoSync = trAutoSync_.load();
+    return s;
+}
+
+std::string DeviceModel::trStatusText() const
+{
+    switch (trState_.load()) {
+    case 0: return "The Total Recall state is undetermined.";
+    case 1: return "Total Recall is disabled.";
+    case 2: return "Total Recall is now active and synchronized!";
+    case 3: return "Total Recall has been aborted.";
+    case 5: return "Waiting for the device to confirm a new Total Recall session.";
+    case 6: return "Setting up a new Total Recall session. This may take a couple of seconds.";
+    case 8: return "Please select which state to use for Total Recall (either on the device or in the plugin).";
+    case 9:
+    case 11: return "Transferring Total Recall data from the plugin to the device. This may take a couple of seconds.";
+    case 10:
+    case 12: return "Synchronizing Total Recall data from the device to the plugin. This may take a couple of seconds.";
+    default: return "Confused about the Total Recall state";
+    }
 }
 
 void DeviceModel::attach(Messenger* m)
@@ -178,11 +438,38 @@ void DeviceModel::attach(Messenger* m)
     });
     for (int t = 0; t < kTracks; ++t) loadTrack(m, t);
     loadKit(m);
+    subscribe(m);
+}
+
+void DeviceModel::subscribe(Messenger* m)
+{
+    // The device sends parameter change notifications (class 0x30) only after "observe" requests:
+    // class 0x22 with the object type and a {a, 0} payload, as a read without data. Measured on
+    // OS 1.12: knob moves on the device then arrive as {a, pid, value} (track 2's filter frequency,
+    // FM algorithm). One request per object the plugin shows: the 16 sounds, FX, kit, mixer settings.
+    auto observe = [m](uint8_t type, uint16_t arg, uint32_t a) {
+        m->write(0x22, type, arg, {(uint8_t)(a >> 24), (uint8_t)(a >> 16), (uint8_t)(a >> 8), (uint8_t)a, 0, 0, 0, 0});
+    };
+    for (int t = 0; t < kTracks; ++t) observe(kObjSound, (uint16_t)t, (uint32_t)t);
+    observe(kObjFx, 0x10, 0x10);
+    observe(kObjKit, 0, 0);
+    observe(kObjSettings, 0, 0);
+    observe(kObjKitPerTrack, 0, 0);
+}
+
+bool DeviceModel::altMachinesAvailable() const
+{
+    // The alternative firmware is recognised by a track that already uses one of its machines
+    // (machine numbers above 4); the official firmware has machines 0..4 only.
+    for (int t = 0; t < kTracks; ++t)
+        if (trackLoaded(t) && machine(t) > 4) return true;
+    return false;
 }
 
 void DeviceModel::setMachine(int track, int machine)
 {
-    if (machine >= 0 && machine <= 4 && machine != this->machine(track)) changeSetupByte(track, kSetupMachineOffset, machine);
+    const bool ok = (machine >= 0 && machine <= 4) || (isAltMachine(machine) && altMachinesAvailable());
+    if (ok && machine != this->machine(track)) changeSetupByte(track, kSetupMachineOffset, machine);
 }
 
 void DeviceModel::setFilterMachine(int track, int filter)
@@ -351,7 +638,14 @@ void DeviceModel::applyJob(int track, std::vector<uint8_t> c)
 
     // Leftovers of other machines (owner 0..4) and filter machines (owner 5..10). Activating a machine
     // resets its parameters, so each slot is written by the last activated owner that uses it.
-    auto ownerOf = [](const ParamDef& p) { return machineOf(p) >= 0 ? machineOf(p) : filterMachineOf(p) >= 0 ? 5 + filterMachineOf(p) : -1; };
+    // owners that may be activated to write leftover slots: the Digitone II machines (0..4) and filter
+    // machines (5..10). The alternative firmware's machines (8 ...) are never used for that: their slots
+    // are reachable through the Digitone II machines, and the official firmware does not have them.
+    auto ownerOf = [](const ParamDef& p) {
+        const int m = machineOf(p);
+        if (m >= 0) return m <= 4 ? m : -1;
+        return filterMachineOf(p) >= 0 ? 5 + filterMachineOf(p) : -1;
+    };
     std::map<int, std::vector<int>> candidates; // slot -> params of other owners that can hold the value
     for (size_t i = 0; i < params.size(); ++i) {
         const auto& p = params[i];
@@ -731,7 +1025,25 @@ void DeviceModel::onNotification(const Message& m)
         pendingReload_ |= 1u << ((m.payload[0] << 8 | m.payload[1]) & 0x0f);
         return;
     }
-    if (type == 4 || type == 6 || type == 8 || type == 10 || type == 0x0e || type == 0x10 || type == 0x11 || type == 0x1a) {
+    if (m.header.cls == 0x30 && type == 0x2b && m.payload.size() >= 6) { // Total Recall state
+        {
+            std::lock_guard<std::mutex> l(trLock_);
+            trStates_.push_back(m.payload[5]);
+        }
+        ++trStateCount_;
+        trWork_ = true;
+        return;
+    }
+    if (m.header.cls == 0x30 && type == 0x2c) { // Total Recall session id changed
+        ++trSessionChanges_;
+        return;
+    }
+    if (type == 0x1a) { // project settings changed (mixer mutes ...): read them again, not the whole kit
+
+        pendingMixer_ = true;
+        return;
+    }
+    if (type == 4 || type == 6 || type == 8 || type == 10 || type == 0x0e || type == 0x10 || type == 0x11) {
         if (type == 6 && m.payload.size() >= 2) pendingReload_ |= 1u << ((m.payload[0] << 8 | m.payload[1]) & 0x0f);
         else reload();
         return;
